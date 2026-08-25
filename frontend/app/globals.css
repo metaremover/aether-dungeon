@@ -3,12 +3,32 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 255, 255, 255;
-  --background-start-rgb: 8, 4, 15;
-  --background-end-rgb: 8, 4, 15;
+  --foreground-rgb: 245, 230, 211;
+  --background-start-rgb: 4, 2, 7;
+  --background-end-rgb: 4, 2, 7;
 }
 
 body {
   color: rgb(var(--foreground-rgb));
-  background: #08040f;
+  background: #040207;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* Custom Scrollbar for Dungeon Terminal */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #06020a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2d1422;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #5c1c2e;
 }
