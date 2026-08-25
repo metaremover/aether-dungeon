@@ -2,13 +2,21 @@
 """
 AetherDungeon Autonomous Loot & Relic Relay (GenLayer -> EVM Vault)
 ===================================================================
-Polls GenLayer Court for conquered dungeon sessions (VICTORY_DISBURSED), verifies
-adventurer binding on EVM Vault (AetherVault.sol), and executes real on-chain loot payouts and relic minting.
+Polls GenLayer Court for conquered dungeon sessions (VICTORY_DISBURSED), performs
+strict pre-settlement verification of EVM adventurer, wager, funding, and settlement
+state against the GenLayer record, and executes signed ECDSA transactions with confirmed receipts (status == 1).
 
-Production Web3 Invariants:
-1. Bound Participant & Escrow Verification: Asserts adventurer matches and isFunded == True.
-2. Signed Transactions & Confirmed Receipts: Uses web3.py/eth_account to sign and confirm status == 1.
-3. Zero Fabricated Fallbacks: Fails closed on any RPC error or discrepancy.
+SESSION-ID MAPPING CONVENTION:
+Standardized 1-to-1 mapping between GenLayer string ID and EVM bytes32:
+- GenLayer: "SESSION_001" (str)
+- EVM: bytes32(abi.encodePacked("SESSION_001")) = `session_id.encode('utf-8').ljust(32, b'\0')[:32]`
+
+PRE-SETTLEMENT VERIFICATION INVARIANTS:
+1. Participant Binding: EVM adventurer strictly matches GenLayer session record.
+2. Collateral Verification: EVM quest must be funded (isFunded == True).
+3. Settlement Idempotency: EVM quest must not be already settled (isSettled == False).
+4. Victory Validation: GenLayer session status must be "VICTORY_DISBURSED".
+5. Confirmed Receipts: Waits for on-chain receipt and asserts receipt.status == 1 on both chains.
 """
 
 import os
@@ -45,6 +53,13 @@ POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
 
 VAULT_ABI = [
     {
+        "inputs": [{"internalType": "bytes32", "name": "sessionId", "type": "bytes32"}],
+        "name": "enterDungeonQuest",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
         "inputs": [
             {"internalType": "bytes32", "name": "sessionId", "type": "bytes32"},
             {"internalType": "address", "name": "adventurer", "type": "address"},
@@ -56,10 +71,10 @@ VAULT_ABI = [
         "type": "function"
     },
     {
-        "inputs": [{"internalType": "bytes32", "name": "", "type": "bytes32"}],
-        "name": "quests",
+        "inputs": [{"internalType": "bytes32", "name": "sessionId", "type": "bytes32"}],
+        "name": "getQuestEscrow",
         "outputs": [
-            {"internalType": "bytes32", "name": "sessionId", "type": "bytes32"},
+            {"internalType": "bytes32", "name": "id", "type": "bytes32"},
             {"internalType": "address", "name": "adventurer", "type": "address"},
             {"internalType": "uint256", "name": "wagerAmount", "type": "uint256"},
             {"internalType": "uint256", "name": "lootPayout", "type": "uint256"},
@@ -132,7 +147,27 @@ class EvmSettlementRelay:
         raw_bytes = text.encode("utf-8")
         return raw_bytes.ljust(32, b'\0')[:32]
 
-    def execute_disburse_loot(self, session_id: str, adventurer_addr: str, relic_dna_str: str) -> bool:
+    def get_evm_quest(self, session_id: str) -> Optional[Dict[str, Any]]:
+        if not self.w3:
+            return None
+        try:
+            contract = self.w3.eth.contract(address=Web3.to_checksum_address(self.contract_address), abi=VAULT_ABI)
+            s_bytes32 = self.to_bytes32(session_id)
+            res = contract.functions.getQuestEscrow(s_bytes32).call()
+            return {
+                "sessionId": res[0],
+                "adventurer": res[1],
+                "wagerAmount": res[2],
+                "lootPayout": res[3],
+                "isFunded": res[4],
+                "isSettled": res[5],
+                "relicDna": res[6]
+            }
+        except Exception as e:
+            logging.error(f"[EVM READ ERROR] Failed to fetch quest {session_id} on EVM: {e}")
+            return None
+
+    def verify_and_settle_quest(self, session_id: str, gl_session: Dict[str, Any]) -> bool:
         if self.settled_sessions.get(session_id):
             return True
 
@@ -140,11 +175,34 @@ class EvmSettlementRelay:
             logging.error("[FAIL-CLOSED] Web3 or RELAY_PRIVATE_KEY not configured.")
             return False
 
+        # 1. Fetch live EVM Escrow state
+        evm_quest = self.get_evm_quest(session_id)
+        if not evm_quest:
+            logging.error(f"[PRE-SETTLEMENT FAIL] EVM quest {session_id} does not exist on {self.contract_address}")
+            return False
+
+        # 2. Strict Invariant Verification
+        gl_adv = gl_session.get("adventurer", "").lower()
+        gl_status = gl_session.get("status", "")
+        gl_relic = gl_session.get("relic_dna", "0x0")
+
+        evm_adv = str(evm_quest.get("adventurer", "")).lower()
+        evm_funded = bool(evm_quest.get("isFunded", False))
+        evm_settled = bool(evm_quest.get("isSettled", False))
+
+        assert gl_status == "VICTORY_DISBURSED", f"GenLayer quest not won: {gl_status}"
+        assert evm_adv == gl_adv, f"Adventurer mismatch: EVM({evm_adv}) != GL({gl_adv})"
+        assert evm_funded == True, f"EVM quest {session_id} not funded"
+        assert evm_settled == False, f"EVM quest {session_id} already settled"
+
+        logging.info(f"🛡️ [PRE-SETTLEMENT VERIFIED] Quest {session_id} verified: Adventurer {gl_adv}, Relic {gl_relic}")
+
+        # 3. Sign & Broadcast EVM Disbursement Transaction
         try:
             contract = self.w3.eth.contract(address=Web3.to_checksum_address(self.contract_address), abi=VAULT_ABI)
             s_bytes32 = self.to_bytes32(session_id)
-            adv_addr = Web3.to_checksum_address(adventurer_addr)
-            relic_bytes32 = self.to_bytes32(relic_dna_str)
+            adv_addr = Web3.to_checksum_address(gl_adv)
+            relic_bytes32 = self.to_bytes32(gl_relic)
 
             nonce = self.w3.eth.get_transaction_count(self.sender_address)
             gas_price = self.w3.eth.gas_price
@@ -179,7 +237,7 @@ class EvmSettlementRelay:
 
 def run_relay(tracked_sessions: list):
     logging.info("=" * 75)
-    logging.info("   AETHER DUNGEON AUTONOMOUS LOOT RELAY (GENLAYER -> EVM VAULT)")
+    logging.info("   AETHER DUNGEON AUTONOMOUS RELAY & PRE-SETTLEMENT VERIFIER")
     logging.info("=" * 75)
     logging.info(f"GenLayer Court: {GENLAYER_COURT_ADDRESS}")
     logging.info(f"EVM Vault: {EVM_VAULT_ADDRESS}")
@@ -193,10 +251,7 @@ def run_relay(tracked_sessions: list):
             try:
                 session_data = gl_client.get_session(session_id)
                 if session_data and session_data.get("status") == "VICTORY_DISBURSED":
-                    adv = session_data.get("adventurer")
-                    relic = session_data.get("relic_dna", "0x0")
-                    if adv:
-                        evm_relay.execute_disburse_loot(session_id, adv, relic)
+                    evm_relay.verify_and_settle_quest(session_id, session_data)
             except Exception as e:
                 logging.error(f"Error checking dungeon session {session_id}: {e}")
 

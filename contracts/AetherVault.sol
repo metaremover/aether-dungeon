@@ -6,6 +6,11 @@ pragma solidity ^0.8.20;
  * @notice Production EVM Companion Escrow & Soulbound Dungeon Relic Vault.
  * @dev Enforces full native-currency collateralization for dungeon quests and autonomously
  * disburses 3x victory bounties and mints soulbound relics upon verified GenLayer AI consensus.
+ *
+ * SESSION-ID MAPPING CONVENTION:
+ * Standardized 1-to-1 mapping between GenLayer string ID (e.g. "SESSION_001") and EVM bytes32:
+ * `bytes32 sessionId = bytes32(abi.encodePacked("SESSION_001"))` (left-aligned, zero-padded to 32 bytes).
+ * Python / Web3 representation: `session_id.encode('utf-8').ljust(32, b'\0')[:32]`.
  */
 contract AetherVault {
     address public owner;
@@ -73,7 +78,7 @@ contract AetherVault {
     }
 
     /**
-     * @notice Disburses accumulated 3x loot bounty and mints a Soulbound Relic upon victory.
+     * @notice Disburses accumulated 3x loot bounty and mints a Soulbound Relic upon verified GenLayer victory.
      */
     function disburseDungeonLoot(bytes32 sessionId, address adventurer, bytes32 relicDna) external onlyRelay {
         QuestEscrow storage q = quests[sessionId];
@@ -97,6 +102,30 @@ contract AetherVault {
 
         emit LootDisbursed(sessionId, adventurer, payout, relicDna);
         emit SoulboundRelicMinted(tokenId, adventurer, relicDna);
+    }
+
+    /**
+     * @notice View function to retrieve full quest escrow state for relay pre-settlement verification.
+     */
+    function getQuestEscrow(bytes32 sessionId) external view returns (
+        bytes32 id,
+        address adventurer,
+        uint256 wagerAmount,
+        uint256 lootPayout,
+        bool isFunded,
+        bool isSettled,
+        bytes32 relicDna
+    ) {
+        QuestEscrow memory q = quests[sessionId];
+        return (
+            q.sessionId,
+            q.adventurer,
+            q.wagerAmount,
+            q.lootPayout,
+            q.isFunded,
+            q.isSettled,
+            q.relicDna
+        );
     }
 
     receive() external payable {}
