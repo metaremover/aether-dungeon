@@ -5,7 +5,7 @@
 ---
 
 ## 🔗 Verified Deployments & Links
-- **GenLayer Explorer Contract**: [`0xa5f978ac9ca207A157f90a72BA656b23C0ac40AA`](https://explorer-studio.genlayer.com/address/0xa5f978ac9ca207A157f90a72BA656b23C0ac40AA)
+- **GenLayer Explorer Contract**: [`0x2EB8E42A6E7a650e995B2adc306c4051Af1Db122`](https://explorer-studio.genlayer.com/address/0x2EB8E42A6E7a650e995B2adc306c4051Af1Db122)
 - **Live DApp Dashboard**: [`https://aether-dungeon.vercel.app/`](https://aether-dungeon.vercel.app/)
 - **GitHub Repository**: [`https://github.com/metaremover/aether-dungeon`](https://github.com/metaremover/aether-dungeon)
 

@@ -37,7 +37,7 @@ import {
   Layers
 } from 'lucide-react';
 
-const CONTRACT_ADDRESS = '0xa5f978ac9ca207A157f90a72BA656b23C0ac40AA';
+const CONTRACT_ADDRESS = '0x2EB8E42A6E7a650e995B2adc306c4051Af1Db122';
 const GENLAYER_RPC = 'https://studio.genlayer.com/api';
 
 export default function AetherDungeonEngine() {
