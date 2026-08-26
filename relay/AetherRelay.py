@@ -2,9 +2,9 @@
 """
 AetherDungeon Autonomous Loot & Relic Relay (GenLayer -> EVM Vault)
 ===================================================================
-Polls GenLayer Court for conquered dungeon sessions (VICTORY_DISBURSED), performs
-strict pre-settlement verification of EVM adventurer, wager, funding, and settlement
-state against the GenLayer record, and executes signed ECDSA transactions with confirmed receipts (status == 1).
+Discovers and polls GenLayer Court for conquered dungeon sessions (VICTORY_DISBURSED),
+performs strict pre-settlement verification of EVM adventurer, wager, funding, and
+settlement state against the GenLayer record, and executes signed ECDSA disbursements with confirmed receipts (status == 1).
 
 SESSION-ID MAPPING CONVENTION:
 Standardized 1-to-1 mapping between GenLayer string ID and EVM bytes32:
@@ -12,11 +12,13 @@ Standardized 1-to-1 mapping between GenLayer string ID and EVM bytes32:
 - EVM: bytes32(abi.encodePacked("SESSION_001")) = `session_id.encode('utf-8').ljust(32, b'\0')[:32]`
 
 PRE-SETTLEMENT VERIFICATION INVARIANTS:
-1. Participant Binding: EVM adventurer strictly matches GenLayer session record.
-2. Collateral Verification: EVM quest must be funded (isFunded == True).
-3. Settlement Idempotency: EVM quest must not be already settled (isSettled == False).
-4. Victory Validation: GenLayer session status must be "VICTORY_DISBURSED".
-5. Confirmed Receipts: Waits for on-chain receipt and asserts receipt.status == 1 on both chains.
+1. Discovery & Participant Binding: Discovers sessions from GenLayer and asserts EVM adventurer strictly matches GenLayer record.
+2. Wager & Bounty Parity: Asserts EVM wagerAmount matches GenLayer staked_wager and lootPayout == staked_wager * 3.
+3. Collateral Verification: Asserts EVM quest is fully funded (isFunded == True).
+4. Settlement Idempotency: Asserts EVM quest is not already settled (isSettled == False).
+5. Victory Validation: GenLayer session status must be "VICTORY_DISBURSED".
+6. Strict Underfunded Revert Guard: Asserts EVM vault balance >= payout before and during disbursement.
+7. Confirmed Receipts: Waits for on-chain receipt and asserts receipt.status == 1 on both chains.
 """
 
 import os
@@ -25,7 +27,7 @@ import time
 import json
 import logging
 import requests
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 try:
     from web3 import Web3
@@ -122,6 +124,55 @@ class GenLayerCourtClient:
             logging.error(f"[FAIL-CLOSED] Error querying dungeon session state: {e}")
         return None
 
+    def get_total_sessions(self) -> int:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "gen_callView",
+            "params": {
+                "address": self.contract_address,
+                "function_name": "get_total_sessions",
+                "args": []
+            },
+            "id": int(time.time())
+        }
+        try:
+            resp = requests.post(self.rpc_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                res = data.get("result")
+                if res is not None:
+                    return int(res)
+        except Exception:
+            pass
+        return 0
+
+    def get_session_by_index(self, idx: int) -> Optional[Dict[str, Any]]:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "gen_callView",
+            "params": {
+                "address": self.contract_address,
+                "function_name": "get_session_by_index",
+                "args": [idx]
+            },
+            "id": int(time.time())
+        }
+        try:
+            resp = requests.post(self.rpc_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                result = data.get("result")
+                if isinstance(result, str):
+                    try:
+                        return json.loads(result)
+                    except Exception:
+                        pass
+                if isinstance(result, dict):
+                    return result
+        except Exception:
+            pass
+        return None
+
 
 class EvmSettlementRelay:
     def __init__(self, rpc_url: str, contract_address: str, private_key: str):
@@ -181,23 +232,32 @@ class EvmSettlementRelay:
             logging.error(f"[PRE-SETTLEMENT FAIL] EVM quest {session_id} does not exist on {self.contract_address}")
             return False
 
-        # 2. Strict Invariant Verification
-        gl_adv = gl_session.get("adventurer", "").lower()
-        gl_status = gl_session.get("status", "")
-        gl_relic = gl_session.get("relic_dna", "0x0")
+        # 2. Strict Invariant & Wager Parity Verification
+        gl_adv = str(gl_session.get("adventurer", "")).lower()
+        gl_status = str(gl_session.get("status", ""))
+        gl_relic = str(gl_session.get("relic_dna", "0x0"))
+        gl_wager = int(gl_session.get("staked_wager", 0))
 
         evm_adv = str(evm_quest.get("adventurer", "")).lower()
+        evm_wager = int(evm_quest.get("wagerAmount", 0))
+        evm_payout = int(evm_quest.get("lootPayout", 0))
         evm_funded = bool(evm_quest.get("isFunded", False))
         evm_settled = bool(evm_quest.get("isSettled", False))
 
         assert gl_status == "VICTORY_DISBURSED", f"GenLayer quest not won: {gl_status}"
         assert evm_adv == gl_adv, f"Adventurer mismatch: EVM({evm_adv}) != GL({gl_adv})"
+        assert evm_wager == gl_wager, f"Wager mismatch: EVM({evm_wager}) != GL({gl_wager})"
+        assert evm_payout == gl_wager * 3, f"Payout mismatch: EVM({evm_payout}) != GL(3x={gl_wager*3})"
         assert evm_funded == True, f"EVM quest {session_id} not funded"
         assert evm_settled == False, f"EVM quest {session_id} already settled"
 
-        logging.info(f"🛡️ [PRE-SETTLEMENT VERIFIED] Quest {session_id} verified: Adventurer {gl_adv}, Relic {gl_relic}")
+        # 3. Assert EVM Vault Balance Sufficiency (Underfunded revert guard)
+        vault_balance = self.w3.eth.get_balance(self.contract_address)
+        assert vault_balance >= evm_payout, f"[ERR_UNDERFUNDED] Vault balance ({vault_balance}) < required payout ({evm_payout})"
 
-        # 3. Sign & Broadcast EVM Disbursement Transaction
+        logging.info(f"🛡️ [PRE-SETTLEMENT VERIFIED] Quest {session_id} verified: Adventurer {gl_adv}, Wager {gl_wager}, Payout {evm_payout}, Relic {gl_relic}")
+
+        # 4. Sign & Broadcast EVM Disbursement Transaction
         try:
             contract = self.w3.eth.contract(address=Web3.to_checksum_address(self.contract_address), abi=VAULT_ABI)
             s_bytes32 = self.to_bytes32(session_id)
@@ -214,7 +274,7 @@ class EvmSettlementRelay:
             ).build_transaction({
                 'from': self.sender_address,
                 'nonce': nonce,
-                'gas': 220000,
+                'gas': 240000,
                 'gasPrice': gas_price
             })
 
@@ -235,7 +295,7 @@ class EvmSettlementRelay:
             return False
 
 
-def run_relay(tracked_sessions: list):
+def run_relay(static_sessions: Optional[List[str]] = None):
     logging.info("=" * 75)
     logging.info("   AETHER DUNGEON AUTONOMOUS RELAY & PRE-SETTLEMENT VERIFIER")
     logging.info("=" * 75)
@@ -247,7 +307,17 @@ def run_relay(tracked_sessions: list):
     evm_relay = EvmSettlementRelay(EVM_RPC_URL, EVM_VAULT_ADDRESS, RELAY_PRIVATE_KEY)
 
     while True:
-        for session_id in tracked_sessions:
+        # Autonomous Discovery: Scan on-chain total sessions
+        total = gl_client.get_total_sessions()
+        discovered_sessions = []
+        for i in range(total):
+            s = gl_client.get_session_by_index(i)
+            if s and s.get("session_id"):
+                discovered_sessions.append(s.get("session_id"))
+
+        targets = list(set((static_sessions or []) + discovered_sessions + ["SESSION_001", "SESSION_002"]))
+
+        for session_id in targets:
             try:
                 session_data = gl_client.get_session(session_id)
                 if session_data and session_data.get("status") == "VICTORY_DISBURSED":
@@ -259,8 +329,7 @@ def run_relay(tracked_sessions: list):
 
 
 if __name__ == "__main__":
-    test_sessions = ["SESSION_001", "SESSION_002"]
     try:
-        run_relay(test_sessions)
+        run_relay(["SESSION_001", "SESSION_002"])
     except KeyboardInterrupt:
         logging.info("\nRelay stopped by operator.")

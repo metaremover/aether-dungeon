@@ -11,6 +11,10 @@ pragma solidity ^0.8.20;
  * Standardized 1-to-1 mapping between GenLayer string ID (e.g. "SESSION_001") and EVM bytes32:
  * `bytes32 sessionId = bytes32(abi.encodePacked("SESSION_001"))` (left-aligned, zero-padded to 32 bytes).
  * Python / Web3 representation: `session_id.encode('utf-8').ljust(32, b'\0')[:32]`.
+ *
+ * UNDERFUNDED SETTLEMENT INVARIANT:
+ * Strictly asserts `address(this).balance >= payout` and reverts if vault is underfunded,
+ * preventing any quest from being marked settled or paid without confirmed fund transfer.
  */
 contract AetherVault {
     address public owner;
@@ -57,7 +61,7 @@ contract AetherVault {
     }
 
     /**
-     * @notice Stakes native collateral to enter an Aether Dungeon quest.
+     * @notice Stakes native collateral to enter an Aether Dungeon quest bound to GenLayer session.
      */
     function enterDungeonQuest(bytes32 sessionId) external payable {
         require(msg.value > 0, "Stake amount must be > 0");
@@ -79,6 +83,7 @@ contract AetherVault {
 
     /**
      * @notice Disburses accumulated 3x loot bounty and mints a Soulbound Relic upon verified GenLayer victory.
+     * @dev Underfunded settlement strictly REVERTS, preventing quest from being marked settled without payment.
      */
     function disburseDungeonLoot(bytes32 sessionId, address adventurer, bytes32 relicDna) external onlyRelay {
         QuestEscrow storage q = quests[sessionId];
@@ -86,14 +91,14 @@ contract AetherVault {
         require(!q.isSettled, "Quest already settled");
         require(q.adventurer == adventurer, "Adventurer address mismatch");
 
+        uint256 payout = q.lootPayout;
+        require(address(this).balance >= payout, "[ERR_UNDERFUNDED] Vault balance insufficient for 3x loot payout");
+
         q.isSettled = true;
         q.relicDna = relicDna;
 
-        uint256 payout = q.lootPayout;
-        if (address(this).balance >= payout) {
-            (bool sent, ) = payable(adventurer).call{value: payout}("");
-            require(sent, "Native loot payout failed");
-        }
+        (bool sent, ) = payable(adventurer).call{value: payout}("");
+        require(sent, "Native loot transfer to adventurer failed");
 
         // Mint Soulbound Relic NFT
         uint256 tokenId = ++nextTokenId;

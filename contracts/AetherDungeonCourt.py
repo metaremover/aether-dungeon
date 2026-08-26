@@ -6,13 +6,13 @@ An Intelligent Contract on GenLayer that serves as an autonomous, decentralized 
 for free-form natural language tabletop RPGs, adjudicating subjective player actions and releasing
 staked native treasure upon clearing dungeon chambers.
 
-Architectural Invariants & Reviewer Safeguards:
-1. Free-Form Natural Language Strategy: Accepts arbitrary player tactical text (spells, stealth, weapon maneuvers).
-2. Multi-Layer Anti-Replay & Session Binding: Unique session IDs ([ERR_REPLAY_01]) and strict caller authorization ([ERR_AUTH_01]).
-3. Single-Round Unified AI Consensus: Evaluates 24/7 UTC Atomic Clock (timeapi.io) + Player Class/Stats + Action Prompt in 1 parallel pass.
-4. Deterministic Combat & Vitality Mechanics: Calculates action feasibility, damage dealt, HP lost, and chamber progression mathematically.
-5. Bound Native-Currency Loot Vault: On final chamber victory, triggers EVM settlement relay to disburse native collateral bounties from AetherVault.sol.
-6. 100% Fail-Closed Resilience: Reverts on malformed actions or unverified clock feeds, preserving player collateral.
+Architectural Invariants & Reviewer Safeguards (Gen. Dave Updates):
+1. Bound Staked Wager & Session Coupling: Each session binds the adventurer, class, and staked native wager.
+2. AI Result Enum & Combat-Value Bounds Enforcement: Validates AI feasibility enums ('CRITICAL_SUCCESS', 'SUCCESS', etc.) and mathematically clamps combat bounds (damage, HP loss, mana cost) before updating on-chain state.
+3. Multi-Layer Anti-Replay & Authorization: Enforces unique session IDs ([ERR_REPLAY_01]) and strict adventurer ownership ([ERR_AUTH_01]).
+4. Single-Round Unified AI Consensus: Evaluates 24/7 UTC Atomic Clock (timeapi.io) + Player Class/Stats + Action Prompt in 1 parallel pass.
+5. Bound Native-Currency Loot Vault: On final chamber victory, triggers EVM settlement relay to disburse native collateral bounties from AetherVault.sol with strict underfunded revert checks.
+6. 100% Fail-Closed Resilience: Reverts on malformed actions, out-of-bound AI metrics, or unverified clock feeds.
 """
 
 import json
@@ -44,6 +44,7 @@ class DungeonSession:
 class AetherDungeonCourt(gl.Contract):
     operator: str
     sessions: TreeMap[str, DungeonSession]
+    session_keys: TreeMap[str, str]
     total_sessions: u256
     total_bounties_disbursed: u256
 
@@ -69,6 +70,7 @@ class AetherDungeonCourt(gl.Contract):
             last_gm_narration="The torchlight flickers as you step into the damp cavern. The air smells of sulfur and old iron.",
             relic_dna="0x0"
         )
+        self.session_keys["0"] = "SESSION_001"
         self.total_sessions = u256(1)
 
     @gl.public.write
@@ -85,7 +87,7 @@ class AetherDungeonCourt(gl.Contract):
         s_id = session_id.strip()
         cls_clean = adventurer_class.strip().upper()
 
-        # INVARIANT 1: SESSION UNIQUENESS & CLASS VALIDATION
+        # INVARIANT 1: SESSION UNIQUENESS & WAGER VALIDATION
         assert s_id not in self.sessions, f"[ERR_REPLAY_01] Reused session ID '{s_id}'. Session IDs must be unique."
         assert cls_clean in ("SHADOW_ROGUE", "ARCANE_WIZARD", "IRON_PALADIN", "DEATH_KNIGHT"), \
             f"[ERR_CLASS_01] Invalid adventurer class '{cls_clean}'."
@@ -108,6 +110,8 @@ class AetherDungeonCourt(gl.Contract):
             relic_dna="0x0"
         )
 
+        curr_idx = str(int(self.total_sessions))
+        self.session_keys[curr_idx] = s_id
         self.sessions[s_id] = new_session
         self.total_sessions = u256(int(self.total_sessions) + 1)
         return f"Adventurer {sender} entered Aether Dungeon as {cls_clean} (Session: {s_id}) with {staked_wager} native collateral."
@@ -188,7 +192,7 @@ class AetherDungeonCourt(gl.Contract):
             "1. Strict Fields (100% exact match required):\n"
             "   - clock_fresh (boolean: true)\n"
             "   - chamber_cleared (boolean)\n"
-            "   - action_feasibility (valid classification enum)\n"
+            "   - action_feasibility (valid classification enum 'CRITICAL_SUCCESS', 'SUCCESS', 'PARTIAL_SUCCESS', 'FAILURE', 'CRITICAL_FAIL')\n"
             "2. Tolerant Fields (reasonable range):\n"
             "   - damage_dealt and hp_lost within +/- 50 points\n"
             "   - gm_narration (coherent natural language narrative)\n"
@@ -218,22 +222,38 @@ class AetherDungeonCourt(gl.Contract):
         clock_fresh = bool(res_parsed.get("clock_fresh", False))
         assert clock_fresh == True, "[ERR_CLOCK_01] Failed to verify UTC Atomic Clock freshness."
 
+        # INVARIANT 3: ENFORCE AI RESULT ENUMS & COMBAT-VALUE BOUNDS IN CODE
         feasibility = str(res_parsed.get("action_feasibility", "SUCCESS")).strip().upper()
-        damage = int(res_parsed.get("damage_dealt", 350))
-        hp_lost = int(res_parsed.get("hp_lost", 50))
-        mana_used = int(res_parsed.get("mana_used", 50))
+        VALID_FEASIBILITY_ENUMS = ("CRITICAL_SUCCESS", "SUCCESS", "PARTIAL_SUCCESS", "FAILURE", "CRITICAL_FAIL")
+        assert feasibility in VALID_FEASIBILITY_ENUMS, \
+            f"[ERR_AI_ENUM_01] Invalid action feasibility enum '{feasibility}'. Expected one of {VALID_FEASIBILITY_ENUMS}."
+
+        raw_damage = int(res_parsed.get("damage_dealt", 350))
+        assert 0 <= raw_damage <= 1000, f"[ERR_BOUND_DMG] Damage dealt out of bounds: {raw_damage}"
+        damage = max(0, min(1000, raw_damage))
+
+        raw_hp_lost = int(res_parsed.get("hp_lost", 50))
+        assert 0 <= raw_hp_lost <= 500, f"[ERR_BOUND_HP] HP loss out of bounds: {raw_hp_lost}"
+        hp_lost = max(0, min(500, raw_hp_lost))
+
+        raw_mana_used = int(res_parsed.get("mana_used", 50))
+        assert 0 <= raw_mana_used <= 500, f"[ERR_BOUND_MANA] Mana used out of bounds: {raw_mana_used}"
+        mana_used = max(0, min(500, raw_mana_used))
+
         chamber_cleared = bool(res_parsed.get("chamber_cleared", False))
         narration = str(res_parsed.get("gm_narration", "Your strategy unfolded across the dark chamber.")).strip()
 
-        # DETERMINISTIC HEALTH & MANA CALCULATIONS
+        # DETERMINISTIC HEALTH & MANA CALCULATIONS WITH MATHEMATICAL CLAMPING
         cur_hp = int(session.hp)
         cur_mana = int(session.mana)
-        new_hp = max(0, cur_hp - hp_lost)
-        new_mana = max(0, cur_mana - mana_used)
+        new_hp = max(0, min(1000, cur_hp - hp_lost))
+        new_mana = max(0, min(500, cur_mana - mana_used))
         cur_chamber = int(session.current_chamber)
 
         if new_hp == 0:
             new_status = "PERISHED"
+            new_chamber = cur_chamber
+            new_loot = int(session.loot_earned)
             summary = f"DEATH: Adventurer succumbed to damage in Chamber {cur_chamber}. {narration}"
         elif chamber_cleared:
             if cur_chamber >= 3:
@@ -313,6 +333,14 @@ class AetherDungeonCourt(gl.Contract):
         s_key = session_id.strip()
         assert s_key in self.sessions, f"[ERR_STATE_01] Session ID '{s_key}' not found."
         return self.sessions[s_key]
+
+    @gl.public.view
+    def get_session_by_index(self, index: u256) -> DungeonSession:
+        """Allows relay discovery of sessions by sequential index."""
+        idx_key = str(int(index))
+        assert idx_key in self.session_keys, f"[ERR_INDEX_01] Session index '{idx_key}' out of range."
+        s_id = self.session_keys[idx_key]
+        return self.sessions[s_id]
 
     @gl.public.view
     def get_total_sessions(self) -> u256:

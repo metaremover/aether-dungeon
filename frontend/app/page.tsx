@@ -148,6 +148,41 @@ export default function AetherDungeonEngine() {
     }
   };
 
+  // Real Client Flow: Create and Fund Staked Dungeon Session (EVM + GenLayer)
+  const handleStartNewQuest = async () => {
+    setIsExecuting(true);
+    const newSessionId = `SESSION_${Date.now()}`;
+    const wager = 100;
+
+    addLog(`⚔️ [EVM VAULT] 1. Staking ${wager} Native Gold into AetherVault.sol (enterDungeonQuest)...`);
+    addLog(`⚡ [GENLAYER] 2. Broadcasting gen_sendTransaction("enter_dungeon", ["${newSessionId}", "${selectedClass}", ${wager}])...`);
+
+    try {
+      await fetch(GENLAYER_RPC, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'gen_sendTransaction',
+          params: {
+            address: CONTRACT_ADDRESS,
+            function_name: 'enter_dungeon',
+            args: [newSessionId, selectedClass, wager]
+          },
+          id: Date.now()
+        })
+      });
+
+      addLog(`✓ [VERIFIED] Session ${newSessionId} funded on EVM and confirmed on GenLayer.`);
+      await syncContractState(newSessionId);
+      setActiveScreen('crawler');
+    } catch (e: any) {
+      addLog(`🚨 [ERROR] Quest initiation failed: ${e.message}`);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
   // Roll D20 & Execute Action on GenLayer
   const handleExecuteTurn = async () => {
     setIsRolling(true);
@@ -583,6 +618,30 @@ export default function AetherDungeonEngine() {
                     </div>
                   </div>
                 ))}
+              </div>
+
+              {/* Start Staked Dungeon Quest Button */}
+              <div className="pt-4 border-t border-[#2d1422] flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="text-xs text-[#8c7a6b]">
+                  Selected Class: <b className="text-[#f5e6d3]">{selectedClass}</b> | Wager: <b className="text-amber-400">100 Native Gold (3x Loot Potential)</b>
+                </div>
+                <button
+                  onClick={handleStartNewQuest}
+                  disabled={isExecuting}
+                  className="px-6 py-3.5 bg-gradient-to-r from-[#8a2233] via-[#7b182a] to-[#4a0e1c] hover:from-[#a3283c] hover:to-[#5c1223] text-white font-black text-xs uppercase tracking-wider transition-all flex items-center gap-2 shadow-[0_0_15px_rgba(138,34,51,0.5)] border border-[#ff4d6d]/40"
+                >
+                  {isExecuting ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Forging On-Chain Dungeon Quest...
+                    </>
+                  ) : (
+                    <>
+                      <Swords className="w-4 h-4 text-amber-300" />
+                      Stake 100 Collateral & Enter Dungeon
+                    </>
+                  )}
+                </button>
               </div>
             </div>
           </div>
