@@ -47,7 +47,7 @@ logging.basicConfig(
 
 # Configuration from Environment
 GENLAYER_RPC = os.getenv("GENLAYER_RPC", "https://studio.genlayer.com/api")
-GENLAYER_COURT_ADDRESS = os.getenv("GENLAYER_COURT_ADDRESS", "0x2EB8E42A6E7a650e995B2adc306c4051Af1Db122")
+GENLAYER_COURT_ADDRESS = os.getenv("GENLAYER_COURT_ADDRESS", "0xb5D681Fac151E72ef1c1a2c2b4C157C59e7e046C")
 EVM_RPC_URL = os.getenv("EVM_RPC_URL", "https://sepolia.base.org")
 EVM_VAULT_ADDRESS = os.getenv("EVM_VAULT_ADDRESS", "0x9876543210987654321098765432109876543210")
 RELAY_PRIVATE_KEY = os.getenv("RELAY_PRIVATE_KEY", "")

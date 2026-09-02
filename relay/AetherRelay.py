@@ -47,7 +47,7 @@ logging.basicConfig(
 
 # Configuration from Environment
 GENLAYER_RPC = os.getenv("GENLAYER_RPC", "https://studio.genlayer.com/api")
-GENLAYER_COURT_ADDRESS = os.getenv("GENLAYER_COURT_ADDRESS", "0x2EB8E42A6E7a650e995B2adc306c4051Af1Db122")
+GENLAYER_COURT_ADDRESS = os.getenv("GENLAYER_COURT_ADDRESS", "0xb5D681Fac151E72ef1c1a2c2b4C157C59e7e046C")
 EVM_RPC_URL = os.getenv("EVM_RPC_URL", "https://sepolia.base.org")
 EVM_VAULT_ADDRESS = os.getenv("EVM_VAULT_ADDRESS", "0x9876543210987654321098765432109876543210")
 RELAY_PRIVATE_KEY = os.getenv("RELAY_PRIVATE_KEY", "")
@@ -226,36 +226,43 @@ class EvmSettlementRelay:
             logging.error("[FAIL-CLOSED] Web3 or RELAY_PRIVATE_KEY not configured.")
             return False
 
-        # 1. Fetch live EVM Escrow state
+        # 1. Strict GenLayer Finality Verification
+        gl_adv = str(gl_session.get("adventurer", "")).lower()
+        gl_status = str(gl_session.get("status", ""))
+        gl_chamber = int(gl_session.get("current_chamber", 0))
+        gl_relic = str(gl_session.get("relic_dna", "0x0"))
+        gl_wager = int(gl_session.get("staked_wager", 0))
+        gl_loot = int(gl_session.get("loot_earned", 0))
+
+        assert gl_status == "VICTORY_DISBURSED", f"[FINALITY FAIL] GenLayer session status '{gl_status}' is not VICTORY_DISBURSED"
+        assert gl_chamber == 3, f"[FINALITY FAIL] GenLayer session chamber ({gl_chamber}) is not 3 (Obsidian Vault victory required)"
+        assert gl_relic.startswith("0x") and len(gl_relic) >= 10, f"[FINALITY FAIL] Invalid relic DNA on GenLayer: {gl_relic}"
+        assert gl_loot == gl_wager * 3, f"[FINALITY FAIL] GenLayer loot ({gl_loot}) does not match 3x wager ({gl_wager * 3})"
+
+        # 2. Fetch live EVM Escrow state
         evm_quest = self.get_evm_quest(session_id)
         if not evm_quest:
             logging.error(f"[PRE-SETTLEMENT FAIL] EVM quest {session_id} does not exist on {self.contract_address}")
             return False
 
-        # 2. Strict Invariant & Wager Parity Verification
-        gl_adv = str(gl_session.get("adventurer", "")).lower()
-        gl_status = str(gl_session.get("status", ""))
-        gl_relic = str(gl_session.get("relic_dna", "0x0"))
-        gl_wager = int(gl_session.get("staked_wager", 0))
-
+        # 3. Strict Invariant & Wager Parity Verification
         evm_adv = str(evm_quest.get("adventurer", "")).lower()
         evm_wager = int(evm_quest.get("wagerAmount", 0))
         evm_payout = int(evm_quest.get("lootPayout", 0))
         evm_funded = bool(evm_quest.get("isFunded", False))
         evm_settled = bool(evm_quest.get("isSettled", False))
 
-        assert gl_status == "VICTORY_DISBURSED", f"GenLayer quest not won: {gl_status}"
         assert evm_adv == gl_adv, f"Adventurer mismatch: EVM({evm_adv}) != GL({gl_adv})"
         assert evm_wager == gl_wager, f"Wager mismatch: EVM({evm_wager}) != GL({gl_wager})"
         assert evm_payout == gl_wager * 3, f"Payout mismatch: EVM({evm_payout}) != GL(3x={gl_wager*3})"
         assert evm_funded == True, f"EVM quest {session_id} not funded"
         assert evm_settled == False, f"EVM quest {session_id} already settled"
 
-        # 3. Assert EVM Vault Balance Sufficiency (Underfunded revert guard)
+        # 4. Assert EVM Vault Balance Sufficiency (Underfunded revert guard)
         vault_balance = self.w3.eth.get_balance(self.contract_address)
         assert vault_balance >= evm_payout, f"[ERR_UNDERFUNDED] Vault balance ({vault_balance}) < required payout ({evm_payout})"
 
-        logging.info(f"🛡️ [PRE-SETTLEMENT VERIFIED] Quest {session_id} verified: Adventurer {gl_adv}, Wager {gl_wager}, Payout {evm_payout}, Relic {gl_relic}")
+        logging.info(f"🛡️ [PRE-SETTLEMENT & FINALITY VERIFIED] Quest {session_id}: Adventurer {gl_adv}, Wager {gl_wager}, Payout {evm_payout}, Chamber {gl_chamber}, Relic {gl_relic}")
 
         # 4. Sign & Broadcast EVM Disbursement Transaction
         try:

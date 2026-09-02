@@ -5,7 +5,7 @@
 ---
 
 ## 🔗 Verified Deployments & Links
-- **GenLayer Explorer Contract**: [`0x2EB8E42A6E7a650e995B2adc306c4051Af1Db122`](https://explorer-studio.genlayer.com/address/0x2EB8E42A6E7a650e995B2adc306c4051Af1Db122)
+- **GenLayer Explorer Contract**: [`0xb5D681Fac151E72ef1c1a2c2b4C157C59e7e046C`](https://explorer-studio.genlayer.com/address/0xb5D681Fac151E72ef1c1a2c2b4C157C59e7e046C)
 - **Live DApp Dashboard**: [`https://aether-dungeon.vercel.app/`](https://aether-dungeon.vercel.app/)
 - **GitHub Repository**: [`https://github.com/metaremover/aether-dungeon`](https://github.com/metaremover/aether-dungeon)
 
@@ -27,10 +27,11 @@
   - `evm.isFunded == True`
   - `evm.isSettled == False`
   - `gl.status == "VICTORY_DISBURSED"`
+  - `gl.current_chamber == 3`
   - `vault_balance >= payout`
 
 ### 4. Underfunded Settlement Strict Reversion Guard
 - `AetherVault.sol` strictly asserts `require(address(this).balance >= payout, "[ERR_UNDERFUNDED]")` and reverts if the vault is underfunded, preventing any quest from being marked settled or paid without confirmed fund transfer.
 
-### 5. Contract-Level AI Enums & Combat Value Bounds
-- `AetherDungeonCourt.py` enforces strict validation of AI feasibility enums (`CRITICAL_SUCCESS`, `SUCCESS`, `PARTIAL_SUCCESS`, `FAILURE`, `CRITICAL_FAIL`) and clamps combat metrics (`0 <= damage <= 1000`, `0 <= hp_lost <= 500`, `0 <= mana_used <= 500`) in contract code before updating on-chain state.
+### 5. Contract-Level AI Schema & Combat Value Bounds
+- `AetherDungeonCourt.py` enforces strict validation with zero missing fields (`[ERR_SCHEMA_MISSING_FIELD]`), strict feasibility enums (`CRITICAL_SUCCESS`, `SUCCESS`, `PARTIAL_SUCCESS`, `FAILURE`, `CRITICAL_FAIL`), and bounds combat metrics (`0 <= damage <= 800`, `0 <= hp_lost <= 400`, `0 <= mana_used <= 200`) in contract code before updating on-chain state.

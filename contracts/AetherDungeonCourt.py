@@ -219,29 +219,39 @@ class AetherDungeonCourt(gl.Contract):
                 raw_res = raw_res.replace("```json", "").replace("```", "").strip()
 
         res_parsed = json.loads(raw_res)
-        clock_fresh = bool(res_parsed.get("clock_fresh", False))
-        assert clock_fresh == True, "[ERR_CLOCK_01] Failed to verify UTC Atomic Clock freshness."
 
-        # INVARIANT 3: ENFORCE AI RESULT ENUMS & COMBAT-VALUE BOUNDS IN CODE
-        feasibility = str(res_parsed.get("action_feasibility", "SUCCESS")).strip().upper()
+        # INVARIANT 2: STRICT SCHEMA & REQUIRED FIELDS ENFORCEMENT (ZERO MISSING FIELDS)
+        REQUIRED_FIELDS = ("clock_fresh", "action_feasibility", "damage_dealt", "hp_lost", "mana_used", "chamber_cleared", "gm_narration")
+        for req_field in REQUIRED_FIELDS:
+            assert req_field in res_parsed, f"[ERR_SCHEMA_MISSING_FIELD] AI consensus output missing required field '{req_field}'."
+
+        clock_fresh = res_parsed["clock_fresh"]
+        assert isinstance(clock_fresh, bool) and clock_fresh is True, \
+            "[ERR_CLOCK_01] Failed to verify UTC Atomic Clock freshness."
+
+        # INVARIANT 3: ENFORCE AI RESULT ENUMS & DECLARED COMBAT LIMITS IN CODE
+        feasibility = str(res_parsed["action_feasibility"]).strip().upper()
         VALID_FEASIBILITY_ENUMS = ("CRITICAL_SUCCESS", "SUCCESS", "PARTIAL_SUCCESS", "FAILURE", "CRITICAL_FAIL")
         assert feasibility in VALID_FEASIBILITY_ENUMS, \
             f"[ERR_AI_ENUM_01] Invalid action feasibility enum '{feasibility}'. Expected one of {VALID_FEASIBILITY_ENUMS}."
 
-        raw_damage = int(res_parsed.get("damage_dealt", 350))
-        assert 0 <= raw_damage <= 1000, f"[ERR_BOUND_DMG] Damage dealt out of bounds: {raw_damage}"
-        damage = max(0, min(1000, raw_damage))
+        raw_damage = int(res_parsed["damage_dealt"])
+        assert 0 <= raw_damage <= 800, f"[ERR_BOUND_DMG] Damage dealt out of declared combat bounds (0-800): {raw_damage}"
+        damage = max(0, min(800, raw_damage))
 
-        raw_hp_lost = int(res_parsed.get("hp_lost", 50))
-        assert 0 <= raw_hp_lost <= 500, f"[ERR_BOUND_HP] HP loss out of bounds: {raw_hp_lost}"
-        hp_lost = max(0, min(500, raw_hp_lost))
+        raw_hp_lost = int(res_parsed["hp_lost"])
+        assert 0 <= raw_hp_lost <= 400, f"[ERR_BOUND_HP] HP loss out of declared combat bounds (0-400): {raw_hp_lost}"
+        hp_lost = max(0, min(400, raw_hp_lost))
 
-        raw_mana_used = int(res_parsed.get("mana_used", 50))
-        assert 0 <= raw_mana_used <= 500, f"[ERR_BOUND_MANA] Mana used out of bounds: {raw_mana_used}"
-        mana_used = max(0, min(500, raw_mana_used))
+        raw_mana_used = int(res_parsed["mana_used"])
+        assert 0 <= raw_mana_used <= 200, f"[ERR_BOUND_MANA] Mana used out of declared combat bounds (0-200): {raw_mana_used}"
+        mana_used = max(0, min(200, raw_mana_used))
 
-        chamber_cleared = bool(res_parsed.get("chamber_cleared", False))
-        narration = str(res_parsed.get("gm_narration", "Your strategy unfolded across the dark chamber.")).strip()
+        chamber_cleared = res_parsed["chamber_cleared"]
+        assert isinstance(chamber_cleared, bool), "[ERR_SCHEMA_TYPE] chamber_cleared must be a boolean."
+
+        narration = str(res_parsed["gm_narration"]).strip()
+        assert len(narration) >= 10, "[ERR_SCHEMA_NARRATION] gm_narration must contain at least 10 characters of descriptive text."
 
         # DETERMINISTIC HEALTH & MANA CALCULATIONS WITH MATHEMATICAL CLAMPING
         cur_hp = int(session.hp)
